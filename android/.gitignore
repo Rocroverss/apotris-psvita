@@ -1,0 +1,15 @@
+# Gradle files
+.gradle/
+build/
+app/build/
+
+# Local configuration file (sdk.dir is local to machine)
+local.properties
+keystore.properties
+*.jks
+*.keystore
+
+# Generated/Copied artifacts
+app/src/main/assets/
+app/src/main/jniLibs/
+app/src/main/java/

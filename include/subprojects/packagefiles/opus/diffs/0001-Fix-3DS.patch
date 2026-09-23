@@ -1,0 +1,24 @@
+diff -u3 -r opus-1.5.2/celt/arm/arm2gnu.pl opus-1.5.2_/celt/arm/arm2gnu.pl
+--- opus-1.5.2/celt/arm/arm2gnu.pl	2024-01-13 03:55:26.000000000 +0800
++++ opus-1.5.2_/celt/arm/arm2gnu.pl	2026-04-20 18:22:08.774096819 +0800
+@@ -84,7 +84,7 @@
+     s/\{TRUE\}/1/g;
+     s/\{(\w\w\w\w+)\}/$1/g;
+     s/\bINCLUDE[ \t]*([^ \t\n]+)/.include \"$1\"/;
+-    s/\bGET[ \t]*([^ \t\n]+)/.include \"${ my $x=$1; $x =~ s|\.s|-gnu.S|; \$x }\"/;
++    s/\bGET[ \t]*([^ \t\n]+)/#include \"${ my $x=$1; $x =~ s|\.s|-gnu.S|; \$x }\"/;
+     s/\bIMPORT\b/.extern/;
+     s/\bEXPORT\b\s*/.global $symprefix/;
+     s/^(\s+)\[/$1IF/;
+diff -u3 -r opus-1.5.2/celt/arm/celt_pitch_xcorr_arm.s opus-1.5.2_/celt/arm/celt_pitch_xcorr_arm.s
+--- opus-1.5.2/celt/arm/celt_pitch_xcorr_arm.s	2024-01-13 03:55:26.000000000 +0800
++++ opus-1.5.2_/celt/arm/celt_pitch_xcorr_arm.s	2026-04-20 18:20:55.592893553 +0800
+@@ -28,7 +28,7 @@
+ 
+   AREA  |.text|, CODE, READONLY
+ 
+-  GET    celt/arm/armopts.s
++  GET    arm/armopts.s
+ 
+ IF OPUS_ARM_MAY_HAVE_EDSP
+   EXPORT celt_pitch_xcorr_edsp

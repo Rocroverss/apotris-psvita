@@ -1,0 +1,44 @@
+# deno compile output
+server
+
+# Logs
+logs
+*.log
+
+# WebStorm
+**/.idea/workspace.xml
+**/.idea/tasks.xml
+**/.idea/discord.xml
+
+# Runtime data
+pids
+*.pid
+*.seed
+
+# Environment variables and configuration
+.env
+.environment
+config*.json
+
+# Husky
+.husky
+
+# Eslint
+.eslintcache
+
+# VSCode
+.vscode/
+
+### macOS ###
+# General
+.DS_Store
+.AppleDouble
+.LSOverride
+
+# Icon must end with two \r
+Icon
+
+
+# Thumbnails
+._*
+

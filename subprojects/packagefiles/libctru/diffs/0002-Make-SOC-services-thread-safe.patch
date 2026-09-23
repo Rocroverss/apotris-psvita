@@ -1,0 +1,692 @@
+From c6399b50956d00f38c99031f4dbe054cd0cf3d37 Mon Sep 17 00:00:00 2001
+From: ZeroSkill1 <timmskiller102@outlook.com>
+Date: Sat, 11 Apr 2026 21:33:21 +0300
+Subject: [PATCH] Make SOC services thread-safe
+
+https://github.com/devkitPro/libctru/pull/601
+---
+ libctru/include/3ds/services/soc.h            |  14 ++
+ libctru/source/services/soc/soc_accept.c      |   2 +-
+ .../source/services/soc/soc_addglobalsocket.c |   2 +-
+ libctru/source/services/soc/soc_bind.c        |   2 +-
+ .../source/services/soc/soc_closesockets.c    |   2 +-
+ libctru/source/services/soc/soc_common.c      |   6 +-
+ libctru/source/services/soc/soc_common.h      |   5 +-
+ libctru/source/services/soc/soc_connect.c     |   2 +-
+ libctru/source/services/soc/soc_fcntl.c       |   2 +-
+ libctru/source/services/soc/soc_getaddrinfo.c |   2 +-
+ .../source/services/soc/soc_gethostbyaddr.c   |   2 +-
+ .../source/services/soc/soc_gethostbyname.c   |   2 +-
+ libctru/source/services/soc/soc_gethostid.c   |   2 +-
+ libctru/source/services/soc/soc_getnameinfo.c |   2 +-
+ .../source/services/soc/soc_getnetworkopt.c   |   2 +-
+ libctru/source/services/soc/soc_getpeername.c |   2 +-
+ libctru/source/services/soc/soc_getsockname.c |   2 +-
+ libctru/source/services/soc/soc_getsockopt.c  |   2 +-
+ libctru/source/services/soc/soc_init.c        | 165 ++++++++++++++++--
+ libctru/source/services/soc/soc_listen.c      |   2 +-
+ libctru/source/services/soc/soc_poll.c        |   2 +-
+ libctru/source/services/soc/soc_recvfrom.c    |   4 +-
+ libctru/source/services/soc/soc_sendto.c      |   4 +-
+ libctru/source/services/soc/soc_setsockopt.c  |   2 +-
+ libctru/source/services/soc/soc_shutdown.c    |   2 +-
+ .../source/services/soc/soc_shutdownsockets.c |   2 +-
+ libctru/source/services/soc/soc_sockatmark.c  |   2 +-
+ libctru/source/services/soc/soc_socket.c      |   2 +-
+ 28 files changed, 190 insertions(+), 52 deletions(-)
+
+diff --git a/libctru/include/3ds/services/soc.h b/libctru/include/3ds/services/soc.h
+index dad9c3443..df8126931 100644
+--- a/libctru/include/3ds/services/soc.h
++++ b/libctru/include/3ds/services/soc.h
+@@ -5,12 +5,16 @@
+  * After initializing this service you will be able to use system calls from netdb.h, sys/socket.h etc.
+  */
+ #pragma once
++#include <3ds/types.h>
+ #include <netinet/in.h>
+ #include <sys/socket.h>
+ 
+ /// The config level to be used with @ref SOCU_GetNetworkOpt
+ #define SOL_CONFIG 0xfffe
+ 
++/// Default number of SOC sessions to initialize, for backwards compatibility
++#define SOC_DEFAULT_NUM_SESSIONS 1
++
+ /// Options to be used with @ref SOCU_GetNetworkOpt
+ typedef enum
+ {
+@@ -101,9 +105,19 @@ typedef struct
+  * @param context_addr Address of a page-aligned (0x1000) buffer to be used.
+  * @param context_size Size of the buffer, a multiple of 0x1000.
+  * @note The specified context buffer can no longer be accessed by the process which called this function, since the userland permissions for this block are set to no-access.
++ * @note The SOC service can only be used in a single thread when using this function to initialize SOC services. In order to enable usage across multiple threads, use @ref socInitMulti, otherwise threads will block when using socket functions concurrently.
+  */
+ Result socInit(u32 *context_addr, u32 context_size);
+ 
++/**
++ * @brief Initializes the SOC service for use across multiple threads.
++ * @param context_addr Address of a page-aligned (0x1000) buffer to be used.
++ * @param context_size Size of the buffer, a multiple of 0x1000.
++ * @param num_sessions The number of sessions to initialize. This value determines how many socket functions can be run concurrently. Setting it to 1 means only one thread can safely use socket functions.
++ * @note The specified context buffer can no longer be accessed by the process which called this function, since the userland permissions for this block are set to no-access.
++ */
++Result socInitMulti(u32 *context_addr, u32 context_size, u32 num_sessions);
++
+ /**
+  * @brief Closes the soc service.
+  * @note You need to call this in order to be able to use the buffer again.
+diff --git a/libctru/source/services/soc/soc_accept.c b/libctru/source/services/soc/soc_accept.c
+index d12be1fcf..f2f117a79 100644
+--- a/libctru/source/services/soc/soc_accept.c
++++ b/libctru/source/services/soc/soc_accept.c
+@@ -41,7 +41,7 @@ int accept(int sockfd, struct sockaddr *addr, socklen_t *addrlen)
+ 	staticbufs[0] = IPC_Desc_StaticBuffer(tmp_addrlen,0);
+ 	staticbufs[1] = (u32)tmpaddr;
+ 
+-	ret = svcSendSyncRequest(SOCU_handle);
++	ret = socSendSyncRequest();
+ 
+ 	staticbufs[0] = saved_threadstorage[0];
+ 	staticbufs[1] = saved_threadstorage[1];
+diff --git a/libctru/source/services/soc/soc_addglobalsocket.c b/libctru/source/services/soc/soc_addglobalsocket.c
+index 267da3038..42c4bdf36 100644
+--- a/libctru/source/services/soc/soc_addglobalsocket.c
++++ b/libctru/source/services/soc/soc_addglobalsocket.c
+@@ -15,7 +15,7 @@ int SOCU_AddGlobalSocket(int sockfd)
+ 	cmdbuf[0] = IPC_MakeHeader(0x23,1,0); // 0x230040
+ 	cmdbuf[1] = (u32)sockfd;
+ 
+-	int ret = svcSendSyncRequest(SOCU_handle);
++	int ret = socSendSyncRequest();
+ 	if(R_FAILED(ret))return ret;
+ 	return cmdbuf[1];
+ }
+diff --git a/libctru/source/services/soc/soc_bind.c b/libctru/source/services/soc/soc_bind.c
+index 3a5262217..9b31b1645 100644
+--- a/libctru/source/services/soc/soc_bind.c
++++ b/libctru/source/services/soc/soc_bind.c
+@@ -39,7 +39,7 @@ int bind(int sockfd, const struct sockaddr *addr, socklen_t addrlen)
+ 	cmdbuf[5] = IPC_Desc_StaticBuffer(tmp_addrlen,0);
+ 	cmdbuf[6] = (u32)tmpaddr;
+ 
+-	ret = svcSendSyncRequest(SOCU_handle);
++	ret = socSendSyncRequest();
+ 	if(ret != 0) {
+ 		errno = SYNC_ERROR;
+ 		return ret;
+diff --git a/libctru/source/services/soc/soc_closesockets.c b/libctru/source/services/soc/soc_closesockets.c
+index d5bb1e4e8..bfdb08ee3 100644
+--- a/libctru/source/services/soc/soc_closesockets.c
++++ b/libctru/source/services/soc/soc_closesockets.c
+@@ -9,7 +9,7 @@ int SOCU_CloseSockets(void)
+ 	cmdbuf[0] = IPC_MakeHeader(0x21,0,2); // 0x210002;
+ 	cmdbuf[1] = IPC_Desc_CurProcessId();
+ 
+-	int ret = svcSendSyncRequest(SOCU_handle);
++	int ret = socSendSyncRequest();
+ 	if(R_FAILED(ret))return ret;
+ 	return cmdbuf[1];
+ }
+diff --git a/libctru/source/services/soc/soc_common.c b/libctru/source/services/soc/soc_common.c
+index a9a9e1988..892ee0443 100644
+--- a/libctru/source/services/soc/soc_common.c
++++ b/libctru/source/services/soc/soc_common.c
+@@ -1,9 +1,7 @@
+-#include "soc_common.h"
+-#include <errno.h>
+ #include <sys/iosupport.h>
++#include <errno.h>
++#include "soc_common.h"
+ 
+-Handle	SOCU_handle = 0;
+-Handle	socMemhandle = 0;
+ int h_errno = 0;
+ 
+ //This is based on the array from libogc network_wii.c.
+diff --git a/libctru/source/services/soc/soc_common.h b/libctru/source/services/soc/soc_common.h
+index 85759eb7b..71467abf6 100644
+--- a/libctru/source/services/soc/soc_common.h
++++ b/libctru/source/services/soc/soc_common.h
+@@ -1,7 +1,7 @@
+ #pragma once
+ 
+-#include <errno.h>
+ #include <string.h>
++#include <sys/errno.h>
+ #include <sys/iosupport.h>
+ #include <sys/socket.h>
+ #include <3ds/types.h>
+@@ -12,8 +12,7 @@
+ #define SYNC_ERROR ENODEV
+ #define ADDR_STORAGE_LEN sizeof(struct sockaddr_storage)
+ 
+-extern Handle	SOCU_handle;
+-extern Handle	socMemhandle;
++Result socSendSyncRequest();
+ 
+ static inline int
+ soc_get_fd(int fd)
+diff --git a/libctru/source/services/soc/soc_connect.c b/libctru/source/services/soc/soc_connect.c
+index 19955f10f..c7383312a 100644
+--- a/libctru/source/services/soc/soc_connect.c
++++ b/libctru/source/services/soc/soc_connect.c
+@@ -39,7 +39,7 @@ int connect(int sockfd, const struct sockaddr *addr, socklen_t addrlen)
+ 	cmdbuf[5] = IPC_Desc_StaticBuffer(tmp_addrlen,0);
+ 	cmdbuf[6] = (u32)tmpaddr;
+ 
+-	ret = svcSendSyncRequest(SOCU_handle);
++	ret = socSendSyncRequest();
+ 	if(ret != 0) {
+ 		errno = SYNC_ERROR;
+ 		return ret;
+diff --git a/libctru/source/services/soc/soc_fcntl.c b/libctru/source/services/soc/soc_fcntl.c
+index 7748a2dc3..f129a922c 100644
+--- a/libctru/source/services/soc/soc_fcntl.c
++++ b/libctru/source/services/soc/soc_fcntl.c
+@@ -70,7 +70,7 @@ int fcntl(int sockfd, int cmd, ...)
+ 	cmdbuf[3] = (u32)arg;
+ 	cmdbuf[4] = IPC_Desc_CurProcessId();
+ 
+-	ret = svcSendSyncRequest(SOCU_handle);
++	ret = socSendSyncRequest();
+ 	if(ret != 0) {
+ 		errno = SYNC_ERROR;
+ 		return ret;
+diff --git a/libctru/source/services/soc/soc_getaddrinfo.c b/libctru/source/services/soc/soc_getaddrinfo.c
+index 946808187..c520825f3 100644
+--- a/libctru/source/services/soc/soc_getaddrinfo.c
++++ b/libctru/source/services/soc/soc_getaddrinfo.c
+@@ -99,7 +99,7 @@ static int getaddrinfo_detail(const char *node, const char *service, const struc
+ 	staticbufs[0] = IPC_Desc_StaticBuffer(sizeof(addrinfo_3ds_t) * info_count, 0);
+ 	staticbufs[1] = (u32)info;
+ 
+-	int ret = svcSendSyncRequest(SOCU_handle);
++	int ret = socSendSyncRequest();
+ 
+ 	// Restore the thread storage values
+ 	for(i = 0 ; i < 2 ; ++i)
+diff --git a/libctru/source/services/soc/soc_gethostbyaddr.c b/libctru/source/services/soc/soc_gethostbyaddr.c
+index 7e1a11782..fc33186aa 100644
+--- a/libctru/source/services/soc/soc_gethostbyaddr.c
++++ b/libctru/source/services/soc/soc_gethostbyaddr.c
+@@ -28,7 +28,7 @@ struct hostent* gethostbyaddr(const void *addr, socklen_t len, int type)
+ 	cmdbuf[0x100>>2] = (sizeof(outbuf) << 14) | 2;
+ 	cmdbuf[0x104>>2] = (u32)outbuf;
+ 
+-	ret = svcSendSyncRequest(SOCU_handle);
++	ret = socSendSyncRequest();
+ 	if(ret != 0) {
+ 		h_errno = NO_RECOVERY;
+ 		return NULL;
+diff --git a/libctru/source/services/soc/soc_gethostbyname.c b/libctru/source/services/soc/soc_gethostbyname.c
+index 43c436e5f..6e9f36175 100644
+--- a/libctru/source/services/soc/soc_gethostbyname.c
++++ b/libctru/source/services/soc/soc_gethostbyname.c
+@@ -29,7 +29,7 @@ struct hostent* gethostbyname(const char *name)
+ 	staticbufs[0] = IPC_Desc_StaticBuffer(sizeof(outbuf),0);
+ 	staticbufs[1] = (u32)outbuf;
+ 
+-	ret = svcSendSyncRequest(SOCU_handle);
++	ret = socSendSyncRequest();
+ 
+ 	staticbufs[0] = saved_threadstorage[0];
+ 	staticbufs[1] = saved_threadstorage[1];
+diff --git a/libctru/source/services/soc/soc_gethostid.c b/libctru/source/services/soc/soc_gethostid.c
+index ba4fe4fb8..49fd85c2e 100644
+--- a/libctru/source/services/soc/soc_gethostid.c
++++ b/libctru/source/services/soc/soc_gethostid.c
+@@ -9,7 +9,7 @@ long gethostid(void)
+ 
+ 	cmdbuf[0] = IPC_MakeHeader(0x16,0,0); // 0x160000
+ 
+-	ret = svcSendSyncRequest(SOCU_handle);
++	ret = socSendSyncRequest();
+ 	if(ret != 0) {
+ 		errno = SYNC_ERROR;
+ 		return -1;
+diff --git a/libctru/source/services/soc/soc_getnameinfo.c b/libctru/source/services/soc/soc_getnameinfo.c
+index e6cf1116d..a00077342 100644
+--- a/libctru/source/services/soc/soc_getnameinfo.c
++++ b/libctru/source/services/soc/soc_getnameinfo.c
+@@ -48,7 +48,7 @@ int getnameinfo(const struct sockaddr *sa, socklen_t salen, char *host, socklen_
+ 	staticbufs[2] = IPC_Desc_StaticBuffer(servlen,0);
+ 	staticbufs[3] = (u32)serv;
+ 
+-	Result ret = svcSendSyncRequest(SOCU_handle);
++	Result ret = socSendSyncRequest();
+ 
+ 	// Restore the thread storage values
+ 	for(i = 0 ; i < 4 ; ++i)
+diff --git a/libctru/source/services/soc/soc_getnetworkopt.c b/libctru/source/services/soc/soc_getnetworkopt.c
+index 908a3964e..751a1b659 100644
+--- a/libctru/source/services/soc/soc_getnetworkopt.c
++++ b/libctru/source/services/soc/soc_getnetworkopt.c
+@@ -22,7 +22,7 @@ int SOCU_GetNetworkOpt(int level, NetworkOpt optname, void * optval, socklen_t *
+ 	staticbufs[0] = IPC_Desc_StaticBuffer(*optlen, 0);
+ 	staticbufs[1] = (u32)optval;
+ 
+-	ret = svcSendSyncRequest(SOCU_handle);
++	ret = socSendSyncRequest();
+ 
+ 	// Restore the thread storage values
+ 	for(i = 0 ; i < 2 ; ++i)
+diff --git a/libctru/source/services/soc/soc_getpeername.c b/libctru/source/services/soc/soc_getpeername.c
+index d15bade70..4240f0d12 100644
+--- a/libctru/source/services/soc/soc_getpeername.c
++++ b/libctru/source/services/soc/soc_getpeername.c
+@@ -30,7 +30,7 @@ int getpeername(int sockfd, struct sockaddr *addr, socklen_t *addrlen)
+ 	staticbufs[0] = IPC_Desc_StaticBuffer(ADDR_STORAGE_LEN,0);
+ 	staticbufs[1] = (u32)tmpaddr;
+ 
+-	ret = svcSendSyncRequest(SOCU_handle);
++	ret = socSendSyncRequest();
+ 
+ 	staticbufs[0] = saved_threadstorage[0];
+ 	staticbufs[1] = saved_threadstorage[1];
+diff --git a/libctru/source/services/soc/soc_getsockname.c b/libctru/source/services/soc/soc_getsockname.c
+index df75402f2..dfe496491 100644
+--- a/libctru/source/services/soc/soc_getsockname.c
++++ b/libctru/source/services/soc/soc_getsockname.c
+@@ -30,7 +30,7 @@ int getsockname(int sockfd, struct sockaddr *addr, socklen_t *addrlen)
+ 	staticbufs[0] = IPC_Desc_StaticBuffer(ADDR_STORAGE_LEN,0);
+ 	staticbufs[1] = (u32)tmpaddr;
+ 
+-	ret = svcSendSyncRequest(SOCU_handle);
++	ret = socSendSyncRequest();
+ 
+ 	staticbufs[0] = saved_threadstorage[0];
+ 	staticbufs[1] = saved_threadstorage[1];
+diff --git a/libctru/source/services/soc/soc_getsockopt.c b/libctru/source/services/soc/soc_getsockopt.c
+index e3fe64a86..a907ef612 100644
+--- a/libctru/source/services/soc/soc_getsockopt.c
++++ b/libctru/source/services/soc/soc_getsockopt.c
+@@ -29,7 +29,7 @@ int getsockopt(int sockfd, int level, int optname, void *optval, socklen_t *optl
+ 	staticbufs[0] = IPC_Desc_StaticBuffer(*optlen,0);
+ 	staticbufs[1] = (u32)optval;
+ 
+-	ret = svcSendSyncRequest(SOCU_handle);
++	ret = socSendSyncRequest();
+ 
+ 	staticbufs[0] = saved_threadstorage[0];
+ 	staticbufs[1] = saved_threadstorage[1];
+diff --git a/libctru/source/services/soc/soc_init.c b/libctru/source/services/soc/soc_init.c
+index b644ce4c5..480cc2769 100644
+--- a/libctru/source/services/soc/soc_init.c
++++ b/libctru/source/services/soc/soc_init.c
+@@ -1,12 +1,139 @@
+-#include "soc_common.h"
+-#include <errno.h>
++#include <3ds/synchronization.h>
++#include <3ds/result.h>
+ #include <sys/socket.h>
+ #include <3ds/ipc.h>
+ 
++#include <stdlib.h>
++#include <errno.h>
++
++#include "soc_common.h"
++
+ static int     soc_close(struct _reent *r, void *fd);
+ static ssize_t soc_write(struct _reent *r, void *fd, const char *ptr, size_t len);
+ static ssize_t soc_read(struct _reent *r, void *fd, char *ptr, size_t len);
+ 
++typedef struct socSessionItem {
++    struct socSessionItem *next;
++    Handle session;
++} socSessionItem;
++
++static Handle          socMemhandle = 0;
++static socSessionItem* soc_sessions = NULL;
++static socSessionItem* soc_sessions_freelist = NULL;
++static socSessionItem* soc_sessions_usedlist = NULL;
++static RecursiveLock   soc_sessions_lock = { 0 };
++static LightEvent      soc_session_avail_event = { 0 };
++
++
++static Result socSessionsInit(u32 sessionCount)
++{
++    if (!sessionCount) {
++        return MAKERESULT(RL_USAGE, RS_INVALIDARG, RM_SOC, RD_INVALID_SELECTION);
++    }
++    RecursiveLock_Init(&soc_sessions_lock);
++    LightEvent_Init(&soc_session_avail_event, RESET_ONESHOT);
++    
++    RecursiveLock_Lock(&soc_sessions_lock);
++    soc_sessions = (socSessionItem *)malloc(sessionCount * sizeof(socSessionItem));
++    
++    if (!soc_sessions)
++    {
++        RecursiveLock_Unlock(&soc_sessions_lock);
++        return MAKERESULT(RL_FATAL, RS_OUTOFRESOURCE, RM_SOC, RD_OUT_OF_MEMORY);
++    }
++    
++    socSessionItem* next_link = NULL;
++    for (u32 i = 0; i < sessionCount; i++)
++    {
++        Result res = srvGetServiceHandle(&soc_sessions[i].session, "soc:U");
++        if (R_FAILED(res))
++        {
++            for (u32 j = 0; j < i; j++)
++                svcCloseHandle(soc_sessions[j].session);
++            free(soc_sessions);
++            soc_sessions = NULL;
++            RecursiveLock_Unlock(&soc_sessions_lock);
++            return res;
++        }
++        
++        soc_sessions[i].next = next_link;
++        next_link = &soc_sessions[i];
++    }
++    
++    soc_sessions_freelist = next_link;
++    
++    RecursiveLock_Unlock(&soc_sessions_lock);
++    return 0;
++}
++
++static Handle socSessionsTake() {
++    while (1) {
++        RecursiveLock_Lock(&soc_sessions_lock);
++        if (soc_sessions_freelist) {
++            // pop session from freelist
++            socSessionItem *popped_item = soc_sessions_freelist;
++            soc_sessions_freelist = popped_item->next;
++            
++            const Handle session = popped_item->session;
++            // empty the holder, prevent any mismanagement from giving this session to another thread
++            popped_item->session = 0;
++            
++            // push empty holder to usedlist
++            popped_item->next = soc_sessions_usedlist;
++            soc_sessions_usedlist = popped_item;
++            
++            RecursiveLock_Unlock(&soc_sessions_lock);
++            return session;
++        } else {
++            RecursiveLock_Unlock(&soc_sessions_lock);
++            // no session available, wait until there is one
++            LightEvent_Wait(&soc_session_avail_event);
++        }
++    }
++}
++
++static void socSessionsGive(Handle session) {
++    RecursiveLock_Lock(&soc_sessions_lock);
++    
++    // we must assume that the usedlist always contains at least one node
++    // because it is impossible for this function to be called otherwise
++
++    // pop empty holder from usedlist
++    socSessionItem *node = soc_sessions_usedlist;
++    soc_sessions_usedlist = node->next;
++
++    // push session to freelist
++    node->session = session;
++    node->next = soc_sessions_freelist;
++    soc_sessions_freelist = node;
++    
++    LightEvent_Signal(&soc_session_avail_event);
++    RecursiveLock_Unlock(&soc_sessions_lock);
++}
++
++Result socSendSyncRequest() {
++    Handle soc = socSessionsTake();
++    Result res = svcSendSyncRequest(soc);
++    socSessionsGive(soc);
++    return res;
++}
++
++static void socSessionsFree() {
++    RecursiveLock_Lock(&soc_sessions_lock);
++    
++    // we have to assume that all sessions are free in this state
++    for (socSessionItem *i = soc_sessions_freelist; i; i = i->next) {
++        svcCloseHandle(i->session);
++    }
++    
++    free(soc_sessions);
++    soc_sessions = NULL;
++    soc_sessions_freelist = NULL;
++    soc_sessions_usedlist = NULL;
++    
++    RecursiveLock_Unlock(&soc_sessions_lock);
++}
++
+ static devoptab_t
+ soc_devoptab =
+ {
+@@ -48,7 +175,7 @@ static Result SOCU_Initialize(Handle memhandle, u32 memsize)
+ 	cmdbuf[4] = IPC_Desc_SharedHandles(1);
+ 	cmdbuf[5] = memhandle;
+ 
+-	ret = svcSendSyncRequest(SOCU_handle);
++	ret = socSendSyncRequest();
+ 	if(ret != 0) {
+ 		errno = SYNC_ERROR;
+ 		return ret;
+@@ -64,7 +191,7 @@ static Result SOCU_Shutdown(void)
+ 
+ 	cmdbuf[0] = IPC_MakeHeader(0x19,0,0); // 0x190000
+ 
+-	ret = svcSendSyncRequest(SOCU_handle);
++	ret = socSendSyncRequest();
+ 	if(ret != 0) {
+ 		errno = SYNC_ERROR;
+ 		return ret;
+@@ -73,7 +200,7 @@ static Result SOCU_Shutdown(void)
+ 	return cmdbuf[1];
+ }
+ 
+-Result socInit(u32* context_addr, u32 context_size)
++Result socInitMulti(u32* context_addr, u32 context_size, u32 num_sessions)
+ {
+ 	Result ret = 0;
+ 
+@@ -85,7 +212,7 @@ Result socInit(u32* context_addr, u32 context_size)
+ 	ret = svcCreateMemoryBlock(&socMemhandle, (u32)context_addr, context_size, 0, 3);
+ 	if(ret != 0) return ret;
+ 
+-	ret = srvGetServiceHandle(&SOCU_handle, "soc:U");
++	ret = socSessionsInit(num_sessions);
+ 	if(ret != 0)
+ 	{
+ 		svcCloseHandle(socMemhandle);
+@@ -96,10 +223,9 @@ Result socInit(u32* context_addr, u32 context_size)
+ 	ret = SOCU_Initialize(socMemhandle, context_size);
+ 	if(ret != 0)
+ 	{
++		socSessionsFree();
+ 		svcCloseHandle(socMemhandle);
+-		svcCloseHandle(SOCU_handle);
+ 		socMemhandle = 0;
+-		SOCU_handle = 0;
+ 		return ret;
+ 	}
+ 
+@@ -107,30 +233,31 @@ Result socInit(u32* context_addr, u32 context_size)
+ 	dev = AddDevice(&soc_devoptab);
+ 	if(dev < 0)
+ 	{
++		socSessionsFree();
+ 		svcCloseHandle(socMemhandle);
+-		svcCloseHandle(SOCU_handle);
+ 		socMemhandle = 0;
+-		SOCU_handle = 0;
+ 		return dev;
+ 	}
+ 
+ 	return 0;
+ }
+ 
+-Result socExit(void)
++Result socInit(u32* context_addr, u32 context_size)
+ {
+-	Result ret = 0;
+-	int dev;
++	return socInitMulti(context_addr, context_size, SOC_DEFAULT_NUM_SESSIONS);
++}
+ 
++Result socExit(void)
++{
++	// shut down sockets before closing the memory block
++	Result ret = SOCU_Shutdown();
++	
+ 	svcCloseHandle(socMemhandle);
+ 	socMemhandle = 0;
+ 
+-	ret = SOCU_Shutdown();
+-
+-	svcCloseHandle(SOCU_handle);
+-	SOCU_handle = 0;
++	socSessionsFree();
+ 
+-	dev = FindDevice("soc:");
++	int dev = FindDevice("soc:");
+ 	if(dev >= 0)
+ 		RemoveDevice("soc:");
+ 
+@@ -150,7 +277,7 @@ soc_close(struct _reent *r,
+ 	cmdbuf[1] = (u32)sockfd;
+ 	cmdbuf[2] = IPC_Desc_CurProcessId();
+ 
+-	ret = svcSendSyncRequest(SOCU_handle);
++	ret = socSendSyncRequest();
+ 	if(ret != 0) {
+ 		errno = SYNC_ERROR;
+ 		return ret;
+diff --git a/libctru/source/services/soc/soc_listen.c b/libctru/source/services/soc/soc_listen.c
+index 25883d6b2..48d27c434 100644
+--- a/libctru/source/services/soc/soc_listen.c
++++ b/libctru/source/services/soc/soc_listen.c
+@@ -19,7 +19,7 @@ int listen(int sockfd, int max_connections)
+ 	cmdbuf[2] = (u32)max_connections;
+ 	cmdbuf[3] = IPC_Desc_CurProcessId();
+ 
+-	ret = svcSendSyncRequest(SOCU_handle);
++	ret = socSendSyncRequest();
+ 	if(ret != 0) {
+ 		errno = SYNC_ERROR;
+ 		return ret;
+diff --git a/libctru/source/services/soc/soc_poll.c b/libctru/source/services/soc/soc_poll.c
+index 145fff2cb..a3ad34c50 100644
+--- a/libctru/source/services/soc/soc_poll.c
++++ b/libctru/source/services/soc/soc_poll.c
+@@ -58,7 +58,7 @@ int poll(struct pollfd *fds, nfds_t nfds, int timeout)
+ 	staticbufs[0] = IPC_Desc_StaticBuffer(size,0);
+ 	staticbufs[1] = (u32)tmp_fds;
+ 
+-	ret = svcSendSyncRequest(SOCU_handle);
++	ret = socSendSyncRequest();
+ 
+ 	staticbufs[0] = saved_threadstorage[0];
+ 	staticbufs[1] = saved_threadstorage[1];
+diff --git a/libctru/source/services/soc/soc_recvfrom.c b/libctru/source/services/soc/soc_recvfrom.c
+index eed0422a9..d9da84341 100644
+--- a/libctru/source/services/soc/soc_recvfrom.c
++++ b/libctru/source/services/soc/soc_recvfrom.c
+@@ -32,7 +32,7 @@ ssize_t socuipc_cmd7(int sockfd, void *buf, size_t len, int flags, struct sockad
+ 	staticbufs[0] = IPC_Desc_StaticBuffer(tmp_addrlen,0);
+ 	staticbufs[1] = (u32)tmpaddr;
+ 
+-	ret = svcSendSyncRequest(SOCU_handle);
++	ret = socSendSyncRequest();
+ 
+ 	staticbufs[0] = saved_threadstorage[0];
+ 	staticbufs[1] = saved_threadstorage[1];
+@@ -96,7 +96,7 @@ ssize_t socuipc_cmd8(int sockfd, void *buf, size_t len, int flags, struct sockad
+ 	cmdbuf[0x108>>2] = (tmp_addrlen<<14) | 2;
+ 	cmdbuf[0x10c>>2] = (u32)tmpaddr;
+ 
+-	ret = svcSendSyncRequest(SOCU_handle);
++	ret = socSendSyncRequest();
+ 	if(ret != 0) {
+ 		errno = SYNC_ERROR;
+ 		return ret;
+diff --git a/libctru/source/services/soc/soc_sendto.c b/libctru/source/services/soc/soc_sendto.c
+index 42fce5c81..6d712212a 100644
+--- a/libctru/source/services/soc/soc_sendto.c
++++ b/libctru/source/services/soc/soc_sendto.c
+@@ -39,7 +39,7 @@ ssize_t socuipc_cmd9(int sockfd, const void *buf, size_t len, int flags, const s
+ 	cmdbuf[9] = IPC_Desc_Buffer(len,IPC_BUFFER_R);
+ 	cmdbuf[10] = (u32)buf;
+ 
+-	ret = svcSendSyncRequest(SOCU_handle);
++	ret = socSendSyncRequest();
+ 	if(ret != 0) {
+ 		errno = SYNC_ERROR;
+ 		return ret;
+@@ -93,7 +93,7 @@ ssize_t socuipc_cmda(int sockfd, const void *buf, size_t len, int flags, const s
+ 	cmdbuf[9] = IPC_Desc_StaticBuffer(tmp_addrlen,1);
+ 	cmdbuf[10] = (u32)tmpaddr;
+ 
+-	ret = svcSendSyncRequest(SOCU_handle);
++	ret = socSendSyncRequest();
+ 	if(ret != 0) {
+ 		errno = SYNC_ERROR;
+ 		return ret;
+diff --git a/libctru/source/services/soc/soc_setsockopt.c b/libctru/source/services/soc/soc_setsockopt.c
+index 75cfa2a0d..69f8d001c 100644
+--- a/libctru/source/services/soc/soc_setsockopt.c
++++ b/libctru/source/services/soc/soc_setsockopt.c
+@@ -23,7 +23,7 @@ int setsockopt(int sockfd, int level, int optname, const void *optval, socklen_t
+ 	cmdbuf[7] = IPC_Desc_StaticBuffer(optlen,9);
+ 	cmdbuf[8] = (u32)optval;
+ 
+-	ret = svcSendSyncRequest(SOCU_handle);
++	ret = socSendSyncRequest();
+ 	if(ret != 0) {
+ 		errno = SYNC_ERROR;
+ 		return ret;
+diff --git a/libctru/source/services/soc/soc_shutdown.c b/libctru/source/services/soc/soc_shutdown.c
+index fc6461bfb..a8ab8ecc3 100644
+--- a/libctru/source/services/soc/soc_shutdown.c
++++ b/libctru/source/services/soc/soc_shutdown.c
+@@ -19,7 +19,7 @@ int shutdown(int sockfd, int shutdown_type)
+ 	cmdbuf[2] = (u32)shutdown_type;
+ 	cmdbuf[3] = IPC_Desc_CurProcessId();
+ 
+-	ret = svcSendSyncRequest(SOCU_handle);
++	ret = socSendSyncRequest();
+ 	if(ret != 0) {
+ 		errno = SYNC_ERROR;
+ 		return ret;
+diff --git a/libctru/source/services/soc/soc_shutdownsockets.c b/libctru/source/services/soc/soc_shutdownsockets.c
+index 8c98caa1f..facb0723a 100644
+--- a/libctru/source/services/soc/soc_shutdownsockets.c
++++ b/libctru/source/services/soc/soc_shutdownsockets.c
+@@ -8,7 +8,7 @@ int SOCU_ShutdownSockets(void)
+ 
+ 	cmdbuf[0] = IPC_MakeHeader(0x19,0,0); // 0x190000
+ 
+-	int ret = svcSendSyncRequest(SOCU_handle);
++	int ret = socSendSyncRequest();
+ 	if(R_FAILED(ret))return ret;
+ 	return cmdbuf[1];
+ }
+diff --git a/libctru/source/services/soc/soc_sockatmark.c b/libctru/source/services/soc/soc_sockatmark.c
+index e489d2d7b..f8a489ecc 100644
+--- a/libctru/source/services/soc/soc_sockatmark.c
++++ b/libctru/source/services/soc/soc_sockatmark.c
+@@ -18,7 +18,7 @@ int sockatmark(int sockfd)
+ 	cmdbuf[1] = (u32)sockfd;
+ 	cmdbuf[2] = IPC_Desc_CurProcessId();
+ 
+-	ret = svcSendSyncRequest(SOCU_handle);
++	ret = socSendSyncRequest();
+ 	if(ret != 0) {
+ 		errno = SYNC_ERROR;
+ 		return -1;
+diff --git a/libctru/source/services/soc/soc_socket.c b/libctru/source/services/soc/soc_socket.c
+index 17832d186..d41c0b0cf 100644
+--- a/libctru/source/services/soc/soc_socket.c
++++ b/libctru/source/services/soc/soc_socket.c
+@@ -44,7 +44,7 @@ int socket(int domain, int type, int protocol)
+ 	handle->device = dev;
+ 	handle->fileStruct = ((void *)handle) + sizeof(__handle);
+ 
+-	ret = svcSendSyncRequest(SOCU_handle);
++	ret = socSendSyncRequest();
+ 	if(ret != 0)
+ 	{
+ 		__release_handle(fd);

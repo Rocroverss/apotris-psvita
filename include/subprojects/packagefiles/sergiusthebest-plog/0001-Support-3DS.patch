@@ -1,0 +1,55 @@
+From 59d98f5db0606d5b8b88e1141ddf20a372a99221 Mon Sep 17 00:00:00 2001
+From: Alvin Wong <alvin@alvinhc.com>
+Date: Fri, 10 Apr 2026 23:04:13 +0800
+Subject: [PATCH] Support 3DS
+
+---
+ include/plog/Appenders/ConsoleAppender.h | 5 +++++
+ include/plog/Util.h                      | 8 ++++++++
+ 2 files changed, 13 insertions(+)
+
+diff --git a/include/plog/Appenders/ConsoleAppender.h b/include/plog/Appenders/ConsoleAppender.h
+index a8925a0..74471eb 100644
+--- a/include/plog/Appenders/ConsoleAppender.h
++++ b/include/plog/Appenders/ConsoleAppender.h
+@@ -30,6 +30,11 @@ namespace plog
+                 m_outputHandle = GetStdHandle(outStream == streamStdOut ? stdHandle::kOutput : stdHandle::kErrorOutput);
+             }
+         }
++#elif defined(__3DS__)
++        ConsoleAppender(OutputStream outStream = streamStdOut)
++            : m_isatty(false)
++            , m_outputStream(outStream == streamStdOut ? std::cout : std::cerr)
++        {}
+ #else
+         ConsoleAppender(OutputStream outStream = streamStdOut)
+             : m_isatty(!!isatty(fileno(outStream == streamStdOut ? stdout : stderr)))
+diff --git a/include/plog/Util.h b/include/plog/Util.h
+index ac01a52..cbbea25 100644
+--- a/include/plog/Util.h
++++ b/include/plog/Util.h
+@@ -81,6 +81,10 @@
+ #   endif
+ #endif
+
++#if defined(__3DS__)
++#include <3ds.h>
++#endif
++
+ #if PLOG_CHAR_IS_UTF8
+ #   define PLOG_NSTR(x)    x
+ #else
+@@ -184,6 +188,10 @@ namespace plog
+             uint64_t tid64;
+             pthread_threadid_np(NULL, &tid64);
+             return static_cast<unsigned int>(tid64);
++#elif defined(__3DS__)
++            u32 out;
++            svcGetThreadId(&out, CUR_THREAD_HANDLE);
++            return out;
+ #else
+             return 0;
+ #endif
+--
+2.53.0
+

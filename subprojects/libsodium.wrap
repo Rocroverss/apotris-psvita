@@ -1,0 +1,4 @@
+[wrap-file]
+method = cmake
+[provide]
+libsodium_dep = libsodium

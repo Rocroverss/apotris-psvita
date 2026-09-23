@@ -1,0 +1,7 @@
+[wrap-git]
+url = https://github.com/afska/gba-link-connection
+revision = 01770d7398379624aef7224e2c21d02b683f07fd
+patch_directory = gba-link-connection
+
+[provide]
+dependency_names = gba-link-connection

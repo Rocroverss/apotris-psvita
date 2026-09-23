@@ -1,0 +1,23 @@
+{
+    "lint": {
+        "include": ["*.ts"],
+        "rules": {
+            "tags": ["recommended"],
+            "exclude": ["no-explicit-any"]
+        }
+    },
+    "fmt": {
+        "lineWidth": 120,
+        "semiColons": true,
+        "singleQuote": true,
+        "indentWidth": 4,
+        "include": ["*.ts", "deno.json", "README.md"]
+    },
+    "tasks": {
+        "start": "deno run --allow-net --allow-env main.ts",
+        "dev": "deno run --allow-net --allow-env --watch main.ts",
+        "prepare": "deno compile --allow-net --allow-env --output server main.ts",
+        "check": "deno check main.ts",
+        "lint:fix": "deno lint --fix"
+    }
+}

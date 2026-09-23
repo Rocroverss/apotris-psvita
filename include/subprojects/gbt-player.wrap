@@ -1,0 +1,7 @@
+[wrap-git]
+url = https://github.com/AntonioND/gbt-player.git
+revision = 4ee745f848d1aa610529aca0043f91cbc7d9ef6f
+
+[provide]
+dependency_names = gbt-player
+program_names = s3m2gbt

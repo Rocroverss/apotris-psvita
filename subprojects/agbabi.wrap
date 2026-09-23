@@ -1,0 +1,6 @@
+[wrap-git]
+url = https://github.com/aronson/agbabi
+revision = 4a95328915ee760fb0980eb59ac495a70b6ce6a5
+
+[provide]
+dependency_names = agbabi

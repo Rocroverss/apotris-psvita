@@ -1,0 +1,10 @@
+[wrap-git]
+url = https://github.com/devkitPro/libctru.git
+revision = v2.7.0
+depth = 1
+
+patch_directory = libctru/overlay
+
+diff_files =
+    libctru/diffs/0001-Add-profiling-hooks-to-some-gsp-functions.patch,
+    libctru/diffs/0002-Make-SOC-services-thread-safe.patch

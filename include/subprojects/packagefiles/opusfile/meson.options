@@ -1,0 +1,2 @@
+option('fixed-point', type : 'boolean', value : false)
+option('float-api', type : 'boolean', value : true)

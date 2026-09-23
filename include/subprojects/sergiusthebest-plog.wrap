@@ -1,0 +1,15 @@
+[wrap-file]
+directory = plog-1.1.10
+source_url = https://github.com/SergiusTheBest/plog/archive/1.1.10.tar.gz
+source_filename = 1.1.10.tar.gz
+source_hash = 55a090fc2b46ab44d0dde562a91fe5fc15445a3caedfaedda89fe3925da4705a
+patch_filename = sergiusthebest-plog_1.1.10-1_patch.zip
+patch_url = https://wrapdb.mesonbuild.com/v2/sergiusthebest-plog_1.1.10-1/get_patch
+patch_hash = b273f63a374ec5e0c57950ccbf78e1d58abd7b58fbe2f0b0f7f67e1254f50c2a
+source_fallback_url = https://github.com/mesonbuild/wrapdb/releases/download/sergiusthebest-plog_1.1.10-1/1.1.10.tar.gz
+wrapdb_version = 1.1.10-1
+
+diff_files = sergiusthebest-plog/0001-Support-3DS.patch
+
+[provide]
+plog = plog_dep

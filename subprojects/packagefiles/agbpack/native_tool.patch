@@ -1,0 +1,19 @@
+--- a/meson.build
++++ b/meson.build
+@@ -1,6 +1,6 @@
+ project('agbpack', 'c', default_options: 'c_std=gnu11', version: '0.3.1')
+ 
+-executable('agbpack', [
++agbpack = executable('agbpack', [
+     'rt/out/bootstrap_multiboot_bin.c',
+     'rt/out/bootstrap_multiboot_nopack_bin.c',
+     'rt/out/bootstrap_rom_bin.c',
+@@ -14,4 +14,7 @@ executable('agbpack', [
+     'vendor/apultra/src/libdivsufsort/lib/divsufsort_utils.c',
+     'vendor/apultra/src/libdivsufsort/lib/sssort.c',
+     'vendor/apultra/src/libdivsufsort/lib/trsort.c'
+-], include_directories: include_directories('rt/out', 'src', 'vendor/apultra/src', 'vendor/apultra/src/libdivsufsort/include'))
++], include_directories: include_directories('rt/out', 'src', 'vendor/apultra/src', 'vendor/apultra/src/libdivsufsort/include'),
++native: true)
++
++meson.override_find_program('agbpack', agbpack)

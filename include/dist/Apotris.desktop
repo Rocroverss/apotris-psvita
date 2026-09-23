@@ -1,0 +1,9 @@
+[Desktop Entry]
+Type=Application
+Name=Apotris
+Comment=A free and multiplatform block stacking game
+Exec=Apotris
+Icon=Apotris
+Terminal=false
+Categories=Game;BlocksGame;
+Keywords=block;puzzle;stacking;

@@ -1,0 +1,26 @@
+build*/
+bin/
+.cache/
+.vscode/
+.idea/
+*.gba
+*.elf
+*.sav
+*.srm
+*.pnproj
+*.el
+.clangd
+compile_commands.json
+apotris*.png
+
+dkarm.ini
+# macOS metadata
+.DS_Store
+.AppleDouble
+.LSOverride
+._*
+# Keep the Gradle wrapper tracked; it pins the Android build tool version.
+android/gradle/*
+!android/gradle/wrapper/
+!android/gradle/wrapper/gradle-wrapper.jar
+!android/gradle/wrapper/gradle-wrapper.properties

@@ -1,0 +1,161 @@
+From 800ce2cacaf09af88e9d5d8bf9b96533d6fe998d Mon Sep 17 00:00:00 2001
+From: Alvin Wong <alvin@alvinhc.com>
+Date: Thu, 30 Jan 2025 15:02:58 +0800
+Subject: [PATCH] Add profiling hooks to some gsp functions
+
+---
+ libctru/.gitignore               |  1 +
+ libctru/Makefile                 | 12 +++++++++++-
+ libctru/include/libctru-prof.h   | 25 +++++++++++++++++++++++++
+ libctru/source/services/gspgpu.c | 24 ++++++++++++++++++++++--
+ 4 files changed, 59 insertions(+), 3 deletions(-)
+ create mode 100644 libctru/include/libctru-prof.h
+
+diff --git a/libctru/.gitignore b/libctru/.gitignore
+index 6588131..9cca109 100644
+--- a/libctru/.gitignore
++++ b/libctru/.gitignore
+@@ -1,5 +1,6 @@
+ debug
+ release
++profiling
+ deps
+ build
+ lib
+diff --git a/libctru/Makefile b/libctru/Makefile
+index 6ccb061..3d805a1 100644
+--- a/libctru/Makefile
++++ b/libctru/Makefile
+@@ -112,6 +112,9 @@ release:
+ debug:
+ 	@[ -d $@ ] || mkdir -p $@
+ 
++profiling:
++	@[ -d $@ ] || mkdir -p $@
++
+ lib/libctru.a : lib release $(SOURCES) $(INCLUDES)
+ 	@$(MAKE) BUILD=release OUTPUT=$(CURDIR)/$@ \
+ 	BUILD_CFLAGS="-DNDEBUG=1 -O2 -fomit-frame-pointer" \
+@@ -126,10 +129,17 @@ lib/libctrud.a : lib debug $(SOURCES) $(INCLUDES)
+ 	--no-print-directory -C debug \
+ 	-f $(CURDIR)/Makefile
+ 
++lib/libctru-prof.a : lib profiling $(SOURCES) $(INCLUDES)
++	@$(MAKE) BUILD=profiling OUTPUT=$(CURDIR)/$@ \
++	BUILD_CFLAGS="-DNDEBUG=1 -DPROFILING -O2 -g -fomit-frame-pointer" \
++	DEPSDIR=$(CURDIR)/profiling \
++	--no-print-directory -C profiling \
++	-f $(CURDIR)/Makefile
++
+ #---------------------------------------------------------------------------------
+ clean:
+ 	@echo clean ...
+-	@rm -fr release debug lib docs libctru.tag
++	@rm -fr release debug profiling lib docs libctru.tag
+ 
+ #---------------------------------------------------------------------------------
+ else
+diff --git a/libctru/include/libctru-prof.h b/libctru/include/libctru-prof.h
+new file mode 100644
+index 0000000..bed8e09
+--- /dev/null
++++ b/libctru/include/libctru-prof.h
+@@ -0,0 +1,25 @@
++/**
++ * @file libctru-prof.h
++ * @brief Header specific to libctru-prof profiling hooks.
++ */
++#pragma once
++
++#ifdef __cplusplus
++extern "C" {
++#endif
++
++#include <3ds/types.h>
++
++#include <3ds/services/gspgpu.h>
++
++void ctruProf_gspPresentBuffer_enter(unsigned screen, unsigned swap, const void* fb_a, const void* fb_b, u32 stride, u32 mode);
++void ctruProf_gspPresentBuffer_exit(bool result);
++
++void ctruProf_gspInterruptEvent(GSPGPU_Event irq);
++
++void ctruProf_gspSubmitGxCommand_enter(const u32 gxCommand[0x8]);
++void ctruProf_gspSubmitGxCommand_exit(const u32 gxCommand[0x8], Result result);
++
++#ifdef __cplusplus
++}
++#endif
+diff --git a/libctru/source/services/gspgpu.c b/libctru/source/services/gspgpu.c
+index 2ee7ace..75f7ce4 100644
+--- a/libctru/source/services/gspgpu.c
++++ b/libctru/source/services/gspgpu.c
+@@ -10,6 +10,10 @@
+ #include <3ds/ipc.h>
+ #include <3ds/thread.h>
+ 
++#ifdef PROFILING
++#	include <libctru-prof.h>
++#endif
++
+ #define GSP_EVENT_STACK_SIZE 0x1000
+ 
+ static Handle gspGpuHandle;
+@@ -239,6 +243,9 @@ bool gspHasGpuRight(void)
+ 
+ bool gspPresentBuffer(unsigned screen, unsigned swap, const void* fb_a, const void* fb_b, u32 stride, u32 mode)
+ {
++#ifdef PROFILING
++	ctruProf_gspPresentBuffer_enter(screen, swap, fb_a, fb_b, stride, mode);
++#endif
+ 	GSPGPU_FramebufferInfo info;
+ 	info.active_framebuf = swap;
+ 	info.framebuf0_vaddr = (u32*)fb_a;
+@@ -270,6 +277,9 @@ bool gspPresentBuffer(unsigned screen, unsigned swap, const void* fb_a, const vo
+ 		u.update = 1;
+ 	} while (__strex(fbInfoHeader, u.header));
+ 
++#ifdef PROFILING
++	ctruProf_gspPresentBuffer_exit(ret);
++#endif
+ 	return ret;
+ }
+ 
+@@ -380,6 +390,9 @@ void gspEventThreadMain(void *arg)
+ 
+ 			if (curEvt < GSPGPU_EVENT_MAX)
+ 			{
++#ifdef PROFILING
++				ctruProf_gspInterruptEvent((GSPGPU_Event)curEvt);
++#endif
+ 				gxCmdQueueInterrupt((GSPGPU_Event)curEvt);
+ 				if (gspEventCb[curEvt])
+ 				{
+@@ -403,6 +416,9 @@ void gspEventThreadMain(void *arg)
+ //(mostly, we could overwrite the buffer header with wrong data and make the GSP module reexecute old commands)
+ Result gspSubmitGxCommand(const u32 gxCommand[0x8])
+ {
++#ifdef PROFILING
++	ctruProf_gspSubmitGxCommand_enter(gxCommand);
++#endif
+ 	u32* sharedGspCmdBuf = (u32*)((u8*)gspSharedMem + 0x800 + gspThreadId*0x200);
+ 	u32 cmdBufHeader = __ldrex((s32*)sharedGspCmdBuf);
+ 
+@@ -428,8 +444,12 @@ Result gspSubmitGxCommand(const u32 gxCommand[0x8])
+ 		cmdBufHeader=((cmdBufHeader)&0xFFFF00FF)|((totalCommands<<8)&0xFF00);
+ 	}
+ 
+-	if(totalCommands==1)return GSPGPU_TriggerCmdReqQueue();
+-	return 0;
++	Result ret = 0;
++	if(totalCommands==1)ret = GSPGPU_TriggerCmdReqQueue();
++#ifdef PROFILING
++	ctruProf_gspSubmitGxCommand_exit(gxCommand, ret);
++#endif
++	return ret;
+ }
+ 
+ Result GSPGPU_WriteHWRegs(u32 regAddr, const u32* data, u8 size)
+-- 
+2.53.0
+
